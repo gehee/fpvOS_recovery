@@ -1,0 +1,15 @@
+[package]
+name = "fpvos-recovery"
+version = "0.4.5"
+license-file = "LICENSE"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+eframe = "0.29"
+
+[profile.release]
+opt-level = 2
+
+[build-dependencies]
+embed-resource = "3"

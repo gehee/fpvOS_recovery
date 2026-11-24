@@ -1,0 +1,103 @@
+diff --git a/libwdi/embedder.h b/libwdi/embedder.h
+index 0313130..5cb23c6 100644
+--- a/libwdi/embedder.h
++++ b/libwdi/embedder.h
+@@ -24,7 +24,7 @@
+ #endif
+ 
+ #if !defined(WDK_DIR) && !defined(LIBUSB0_DIR) && !defined(USER_DIR) && !defined(LIBUSBK_DIR)
+-#error at least one of WDK_DIR, LIBUSB0_DIR, LIBUSBK_DIR or USER_DIR must be defined - check your config.h
++// fpvOS: inbox WinUSB needs none of these
+ #endif
+ 
+ // Some adjustment is needed for MSVC
+diff --git a/libwdi/libwdi.c b/libwdi/libwdi.c
+index 1501b45..368cafa 100644
+--- a/libwdi/libwdi.c
++++ b/libwdi/libwdi.c
+@@ -712,8 +712,8 @@ BOOL LIBWDI_API wdi_is_driver_supported(int driver_type, VS_FIXEDFILEINFO* drive
+ #endif
+ 
+ 	if (driver_type < WDI_USER) {	// github issue #40
+-		if (driver_type != WDI_CDC) {
+-			// The CDC driver does not have embedded binaries
++		if (driver_type != WDI_CDC && driver_type != WDI_WINUSB) {
++			// The CDC driver (and inbox WinUSB) does not have embedded binaries
+ 			if (driver_info != NULL) {
+ 				memset(driver_info, 0, sizeof(VS_FIXEDFILEINFO));
+ 			}
+@@ -723,11 +723,7 @@ BOOL LIBWDI_API wdi_is_driver_supported(int driver_type, VS_FIXEDFILEINFO* drive
+ 
+ 	switch (driver_type) {
+ 	case WDI_WINUSB:
+-#if defined(WDK_DIR)
+-		return TRUE;
+-#else
+-		return FALSE;
+-#endif
++		return TRUE;	// fpvOS: inbox WinUSB, no coinstallers
+ 	case WDI_LIBUSB0:
+ #if defined(LIBUSB0_DIR)
+ 		return (platform_arch == IMAGE_FILE_MACHINE_ARM64 || platform_arch == IMAGE_FILE_MACHINE_AMD64 || platform_arch == IMAGE_FILE_MACHINE_I386);
+diff --git a/libwdi/winusb.cat.in b/libwdi/winusb.cat.in
+index 9604596..24479b3 100644
+--- a/libwdi/winusb.cat.in
++++ b/libwdi/winusb.cat.in
+@@ -1,5 +1 @@
+-# List of the binaries referenced by the WinUSB inf
+-# These are used to generate and self-sign a .cat file
+-
+-WdfCoInstaller#WDF_VERSION#.dll
+-winusbcoinstaller2.dll
+\ No newline at end of file
++# fpvOS: inbox WinUSB (Windows 8+) - no binaries besides the inf
+diff --git a/libwdi/winusb.inf.in b/libwdi/winusb.inf.in
+index 0c0774e..0c351b9 100644
+--- a/libwdi/winusb.inf.in
++++ b/libwdi/winusb.inf.in
+@@ -65,36 +65,29 @@ AddReg = #USE_DEVICE_INTERFACE_GUID#
+ HKR,,DeviceInterfaceGUIDs,0x10000,%DeviceGUID%
+ 
+ [USB_Install.NTx86.CoInstallers]
+-AddReg    = CoInstallers_AddReg
+-CopyFiles = CoInstallers_CopyFiles
++;
++
+ 
+ [USB_Install.NTamd64.CoInstallers]
+-AddReg    = CoInstallers_AddReg
+-CopyFiles = CoInstallers_CopyFiles
++;
++
+ 
+ [USB_Install.NTarm64.CoInstallers]
+ ;
+ 
+-[CoInstallers_AddReg]
+-HKR,,CoInstallers32,0x00010000,"WdfCoInstaller#WDF_VERSION#.dll,WdfCoInstaller","WinUSBCoInstaller2.dll"
+ 
+-[CoInstallers_CopyFiles]
+-WinUSBCoInstaller2.dll
+-WdfCoInstaller#WDF_VERSION#.dll
+ 
+-[DestinationDirs]
+-CoInstallers_CopyFiles = 11
+ 
+ [SourceDisksNames]
+ 1 = %SourceName%
+ 
+ [SourceDisksFiles.x86]
+-WinUSBCoInstaller2.dll = 1,x86
+-WdfCoInstaller#WDF_VERSION#.dll = 1,x86
++;
++
+ 
+ [SourceDisksFiles.amd64]
+-WinUSBCoInstaller2.dll = 1,amd64
+-WdfCoInstaller#WDF_VERSION#.dll = 1,amd64
++;
++
+ 
+ [SourceDisksFiles.arm64]
+ ;
+\ No newline at end of file
