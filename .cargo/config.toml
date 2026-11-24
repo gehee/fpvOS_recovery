@@ -1,0 +1,5 @@
+# Windows (MSVC): the C runtime linked in, so the app needs no Visual C++
+# Redistributable (VCRUNTIME140.dll) on the user's PC. libusb is then the
+# fully static vcpkg build to match (x64-windows-static).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
