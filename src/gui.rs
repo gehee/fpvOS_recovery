@@ -528,6 +528,11 @@ impl RecoveryApp {
     fn drain(&mut self) {
         if let Some(rx) = &self.det_rx {
             while let Ok(d) = rx.try_recv() {
+                // A unit choice belongs to the unit it was made for: another
+                // one plugged in (or the same one in another state) is asked anew.
+                if d != self.detected {
+                    self.board_pick = None;
+                }
                 self.detected = d;
             }
         }
@@ -564,6 +569,8 @@ impl RecoveryApp {
     fn ready_board(&self) -> Option<Board> {
         match self.detected {
             Detected::Stock(b) => Some(b),
+            // a pick made for one state never carries to the other
+            Detected::StockOneOf(list) => self.board_pick.filter(|b| list.contains(b)),
             Detected::Bootloader => self.board_pick,
             Detected::None => None,
         }
@@ -683,7 +690,11 @@ impl RecoveryApp {
             Phase::Idle => match self.detected {
                 Detected::None => (
                     "Connect your unit",
-                    "Plug a Skyzone SteadyDigital or BETAFPV P1 Air running its stock firmware into this computer over USB.",
+                    "Plug a Skyzone SteadyDigital or a BETAFPV P1 (Air, goggles or Nano VRX) running its stock firmware into this computer over USB.",
+                ),
+                Detected::StockOneOf(_) => (
+                    "Which P1 is this?",
+                    "This P1 on its stock firmware didn't say whether it is the air unit or a ground unit. Choose it below: each has its own recovery, and nothing checks the choice for you.",
                 ),
                 Detected::Stock(_) => (
                     "Ready to start recovery",
@@ -718,7 +729,7 @@ impl RecoveryApp {
         });
         match (&self.phase, self.detected) {
             (Phase::Idle, Detected::None) => state_word(ui, "Searching", DATA, true),
-            (Phase::Idle, Detected::Stock(_)) => state_word(ui, "Stock firmware", ACCENT, false),
+            (Phase::Idle, Detected::Stock(_) | Detected::StockOneOf(_)) => state_word(ui, "Stock firmware", ACCENT, false),
             (Phase::Idle, Detected::Bootloader) => state_word(ui, "Bootloader", DATA, false),
             (Phase::Running, _) => state_word(ui, "Working", DATA, true),
             (Phase::Done { dry_run: false }, _) => state_word(ui, "Recovery mode", ACCENT, false),
@@ -726,18 +737,29 @@ impl RecoveryApp {
             (Phase::Failed(_), _) => state_word(ui, "Stopped", ERROR, false),
         }
         ui.add_space(2.0);
+        // A stock P1 is named once the user has said which it is.
+        let shown = shown.or(match (&self.phase, self.detected) {
+            (Phase::Idle, Detected::StockOneOf(_)) => self.ready_board(),
+            _ => None,
+        });
         let name = match (shown, &self.phase, self.detected) {
             (Some(b), _, _) => b.label(),
+            (None, Phase::Idle, Detected::StockOneOf(_)) => "BETAFPV P1",
             (None, Phase::Idle, Detected::Bootloader) => "Unknown unit",
             _ => "No unit connected",
         };
         ui.label(strong(name, 21.0, if shown.is_some() { TEXT } else { QUIET }));
 
-        if matches!(self.phase, Phase::Idle) && self.detected == Detected::Bootloader {
+        let choices: &[Board] = match self.detected {
+            Detected::Bootloader => &Board::ALL,
+            Detected::StockOneOf(list) => list,
+            _ => &[],
+        };
+        if matches!(self.phase, Phase::Idle) && !choices.is_empty() {
             ui.add_space(10.0);
             ui.horizontal_wrapped(|ui| {
-                for b in Board::ALL {
-                    let look = if self.board_pick == Some(b) { Look::Solid } else { Look::Outline };
+                for &b in choices {
+                    let look = if self.ready_board() == Some(b) { Look::Solid } else { Look::Outline };
                     if button(ui, b.label(), look, true, None) {
                         self.board_pick = Some(b);
                     }
@@ -800,7 +822,7 @@ impl RecoveryApp {
                     }
                 }
                 let hint = match self.detected {
-                    Detected::Bootloader if board.is_none() => Some("Choose the unit above to continue."),
+                    Detected::Bootloader | Detected::StockOneOf(_) if board.is_none() => Some("Choose the unit above to continue."),
                     Detected::None => None,
                     _ if cfg!(target_os = "macos") => {
                         Some("macOS asks for your password next: it lets the app reach the unit over USB.")
@@ -932,6 +954,8 @@ impl RecoveryApp {
             "idle" => {}
             "found" => self.detected = Detected::Stock(Board::P1Air),
             "bootloader" => self.detected = Detected::Bootloader,
+            "stock-p1" => self.detected = Detected::StockOneOf(&Board::STOCK_P1),
+            "stock-p1-gnd" => self.detected = Detected::Stock(Board::P1Gnd),
             "cancelled" => {
                 self.detected = Detected::Stock(Board::SteadyDigital);
                 self.notice = Some(CANCELLED.into());

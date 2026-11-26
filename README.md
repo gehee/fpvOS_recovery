@@ -1,7 +1,7 @@
 # fpvOS Recovery
 
 A small native app (macOS and Windows) that puts an fpvOS-compatible device
-(Skyzone SteadyDigital, BETAFPV P1 Air) into **fpvOS recovery mode**, so the fpvOS web flasher can take over and install over
+(Skyzone SteadyDigital, BETAFPV P1 Air, P1 goggles, P1 Nano VRX) into **fpvOS recovery mode**, so the fpvOS web flasher can take over and install over
 USB. It is the one desktop-specific step; everything after it is plain Web
 Serial and works on any OS. The window is styled like the web flasher and shows
 the connected compatible hardware live.
@@ -141,6 +141,31 @@ hardware.
 - Verified on hardware: the P1 Air on stock 2.1.2 and the SteadyDigital, from
   macOS and Windows; the P1 Air on stock 1.0.44 from Windows (0.4.2) and macOS
   (0.4.5), its loader detected (2026-11-23).
+- **Every stock P1 has one USB id** (`1d6b:0101`) and one bootloader
+  (`1d6b:0100`): the air unit and the ground units (the VR04 goggles, the
+  P1 HD VRX), with a recovery for each kind. On stock the app tells the kind by the
+  unit's USB interfaces, without sending it anything: stock's ground firmware
+  serves the SD card over MTP beside its network and serial ports, the air
+  unit's does not (so in every stock package compared: air 1.0.44 and 2.1.2,
+  ground 1.0.44, 2.0.5, 2.0.6, 2.0.8 and 2.1.4; not yet seen on a unit). Either
+  kind is then started with no question. If the interfaces are not what either
+  kind shows, or the unit is already in the bootloader, the app asks. In the
+  terminal: `--board p1-air | p1-gnd`, refused when a stock unit's interfaces
+  say it is the other kind.
+- **Which ground unit is never asked.** The VR04 HD FPV Goggles, the VR04 HD
+  Pro FPV Goggles and the P1 HD VRX (Standard and Nano) get the same recovery, with a
+  device tree for any ground unit. Which unit it is comes from the fpvOS
+  bundle then installed in the flasher: `fpvos-p1-gnd-goggles`,
+  `fpvos-p1-gnd-vrx` (the P1 HD VRX, Standard and Nano) or
+  `fpvos-p1-gnd-goggles-pro` (the VR04 HD Pro); the recovery takes any of them.
+- **The VR04 goggles and the P1 HD VRX are not yet run on hardware.** Their
+  bootloaders are the P1 Air's two (stock 1.0.44: v1; 2.0.5, 2.0.6, 2.0.8 and
+  2.1.4: v2), compared in the vendor's packages only, and they are driven as
+  the P1 Air is. Their recovery and the fpvOS `p1-gnd` image it installs have
+  only been built.
+- After the restart command the app waits 30 seconds for the bootloader, on
+  Windows as on macOS (it was 15 on Windows, too short for a P1 HD VRX (Nano) on
+  stock 2.1.4 as one user reported).
 - **macOS sends the loader one USB packet at a time.** There, the stock 1.0.44
   loader's multi-packet transfers (its 960-byte data frames, its one-line
   `crc32` and boot commands) came out wrong, so on macOS v1 is driven as v2 is:

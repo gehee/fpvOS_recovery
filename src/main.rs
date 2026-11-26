@@ -1,7 +1,7 @@
 //! fpvOS Recovery: puts an fpvOS-compatible device into fpvOS recovery mode.
 //!
-//! Boots a stock unit (Skyzone SteadyDigital, BETAFPV P1 Air) into fpvOS
-//! recovery mode so the fpvOS web
+//! Boots a stock unit (Skyzone SteadyDigital, BETAFPV P1 Air, VR04 goggles,
+//! P1 HD VRX) into fpvOS recovery mode so the fpvOS web
 //! flasher can take over and install over USB. By default it opens a native
 //! window (`gui`); `--cli` runs the same flow in the terminal. The recovery
 //! logic lives in `engine`, which drives the `loader` (libusb) and reports
@@ -38,7 +38,7 @@ fn attach_console() {}
 fn print_help() {
     println!(
         "fpvOS Recovery: put an fpvOS-compatible device into fpvOS recovery mode\n\n\
-         Usage: fpvos-recovery [--cli] [--dry-run]\n\n\
+         Usage: fpvos-recovery [--cli] [--dry-run] [--board <unit>]\n\n\
          Default opens a window; --cli runs in the terminal. It reboots the unit into the\n\
          Artosyn bootloader, loads fpvOS recovery into RAM, and boots into recovery mode,\n\
          then hand off to the web flasher: https://gehee.github.io/fpvOS_flasher/\n\n\
@@ -46,6 +46,9 @@ fn print_help() {
          Windows: the first time, it installs the WinUSB driver for the bootloader\n\
                   (1D6B 0100) after one Windows prompt; Zadig is the fallback.\n\n\
          --cli       run in the terminal instead of opening a window.\n\
+         --board     the unit: steadydigital, p1-air or p1-gnd (the VR04 goggles and\n\
+         \x20           the P1 HD VRX). Needed for a unit already in its bootloader,\n\
+         \x20           which is the same on all of them.\n\
          --dry-run   enter the bootloader, verify it, load and on-device checksum the\n\
                      recovery images, but do NOT boot. Power-cycle afterwards.\n\
          A power cycle always restores stock; nothing is written to flash."
@@ -89,7 +92,7 @@ fn main() {
             "--board" => {
                 board_id = it.next().cloned();
                 if board_id.is_none() {
-                    eprintln!("--board needs a value (p1-air | steadydigital)");
+                    eprintln!("--board needs a value ({})", engine::Board::ids(&engine::Board::ALL));
                     std::process::exit(2);
                 }
             }
@@ -104,7 +107,7 @@ fn main() {
         Some(id) => match engine::Board::from_id(id) {
             Some(b) => Some(b),
             None => {
-                eprintln!("Unknown board '{id}' (use p1-air or steadydigital)");
+                eprintln!("Unknown board '{id}' (use {})", engine::Board::ids(&engine::Board::ALL));
                 std::process::exit(2);
             }
         },
@@ -122,12 +125,27 @@ fn main() {
 
     if cli {
         // Use the given board, else whatever is connected in stock.
-        let board = board.or_else(|| match engine::detect() {
+        // A stock unit that says what it is is never driven as another.
+        let detected = engine::detect();
+        if let Some(b) = board {
+            if !engine::consistent(b, detected) {
+                eprintln!("The connected unit is not a {}: it is on stock firmware and its USB interfaces say otherwise.", b.label());
+                std::process::exit(2);
+            }
+        }
+        let board = board.or_else(|| match detected {
             engine::Detected::Stock(b) => Some(b),
+            engine::Detected::StockOneOf(list) => {
+                eprintln!(
+                    "A stock BETAFPV P1 is connected, and its USB interfaces do not say whether it is the air unit or a ground unit. Pass --board {}.",
+                    engine::Board::ids(list)
+                );
+                std::process::exit(2);
+            }
             _ => None,
         });
         let Some(board) = board else {
-            eprintln!("No stock device detected. Connect one, or pass --board p1-air | steadydigital.");
+            eprintln!("No stock device detected. Connect one, or pass --board {}.", engine::Board::ids(&engine::Board::ALL));
             std::process::exit(2);
         };
         if !engine::run_console(dry_run, board) {

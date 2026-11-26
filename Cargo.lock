@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "fpvos-recovery"
-version = "0.4.5"
+version = "0.5.0-alpha1"
 dependencies = [
  "eframe",
  "embed-resource",

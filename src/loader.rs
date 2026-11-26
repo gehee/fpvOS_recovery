@@ -61,6 +61,75 @@ extern "C" {
     fn libusb_get_device_list(ctx: *mut c_void, list: *mut *mut *mut c_void) -> isize;
     fn libusb_free_device_list(list: *mut *mut c_void, unref_devices: c_int);
     fn libusb_get_device_descriptor(dev: *mut c_void, desc: *mut DeviceDescriptor) -> c_int;
+    #[cfg(not(target_os = "windows"))]
+    fn libusb_get_config_descriptor(dev: *mut c_void, index: u8, config: *mut *const ConfigDescriptor) -> c_int;
+    #[cfg(not(target_os = "windows"))]
+    fn libusb_free_config_descriptor(config: *const ConfigDescriptor);
+}
+
+// libusb's parsed configuration: only the fields up to what is read here.
+// (Windows reads the same from SetupAPI: win::interface_classes.)
+#[cfg(not(target_os = "windows"))]
+#[repr(C)]
+struct ConfigDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    w_total_length: u16,
+    b_num_interfaces: u8,
+    b_configuration_value: u8,
+    i_configuration: u8,
+    bm_attributes: u8,
+    max_power: u8,
+    interface: *const Interface,
+}
+
+#[cfg(not(target_os = "windows"))]
+#[repr(C)]
+struct Interface {
+    altsetting: *const InterfaceDescriptor,
+    num_altsetting: c_int,
+}
+
+#[cfg(not(target_os = "windows"))]
+#[repr(C)]
+struct InterfaceDescriptor {
+    b_length: u8,
+    b_descriptor_type: u8,
+    b_interface_number: u8,
+    b_alternate_setting: u8,
+    b_num_endpoints: u8,
+    b_interface_class: u8,
+    b_interface_sub_class: u8,
+    b_interface_protocol: u8,
+    i_interface: u8,
+    endpoint: *const c_void,
+    extra: *const c_uchar,
+    extra_length: c_int,
+}
+
+/// The class of each interface of a device's first configuration, read from
+/// the descriptors the system already holds (the device is not opened).
+/// Empty when they cannot be read.
+#[cfg(not(target_os = "windows"))]
+fn interface_classes(dev: *mut c_void) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut cfg: *const ConfigDescriptor = std::ptr::null();
+    if unsafe { libusb_get_config_descriptor(dev, 0, &mut cfg) } != 0 || cfg.is_null() {
+        return out;
+    }
+    unsafe {
+        let c = &*cfg;
+        if !c.interface.is_null() {
+            for i in 0..c.b_num_interfaces as isize {
+                let iface = &*c.interface.offset(i);
+                if iface.num_altsetting > 0 && !iface.altsetting.is_null() {
+                    out.push((*iface.altsetting).b_interface_class);
+                }
+            }
+        }
+        libusb_free_config_descriptor(cfg);
+    }
+    out
 }
 
 #[repr(C)]
@@ -83,16 +152,17 @@ struct DeviceDescriptor {
 }
 
 /// Non-intrusively enumerate USB (no open/claim) and report which compatible
-/// devices are connected, as (P1 Air stock 1d6b:0101, SteadyDigital stock
-/// 1d6b:0210, bootloader 1d6b:0100). Used by the UI to show what is plugged in.
-pub fn present() -> (bool, bool, bool) {
+/// devices are connected, as (a stock P1 1d6b:0101 - the classes of its USB
+/// interfaces, empty if unreadable -, SteadyDigital stock 1d6b:0210,
+/// bootloader 1d6b:0100). Used by the UI to show what is plugged in.
+pub fn present() -> (Option<Vec<u8>>, bool, bool) {
     let mut ctx: *mut c_void = std::ptr::null_mut();
     if unsafe { libusb_init(&mut ctx) } != 0 {
-        return (false, false, false);
+        return (None, false, false);
     }
     let mut list: *mut *mut c_void = std::ptr::null_mut();
     let n = unsafe { libusb_get_device_list(ctx, &mut list) };
-    let (mut p1, mut sd, mut boot) = (false, false, false);
+    let (mut p1, mut sd, mut boot) = (None, false, false);
     if n > 0 && !list.is_null() {
         for i in 0..n {
             let dev = unsafe { *list.offset(i) };
@@ -104,7 +174,10 @@ pub fn present() -> (bool, bool, bool) {
                 match d.id_product {
                     PID => boot = true,
                     0x0210 => sd = true,
-                    0x0101 => p1 = true,
+                    #[cfg(not(target_os = "windows"))]
+                    0x0101 => p1 = Some(interface_classes(dev)),
+                    #[cfg(target_os = "windows")]
+                    0x0101 => p1 = Some(Vec::new()),
                     _ => {}
                 }
             }
@@ -681,5 +754,34 @@ extern "C" fn write_cb(t: *mut Transfer) {
         let len = tr.length as usize;
         drop(Vec::from_raw_parts(tr.buffer, len, len));
         libusb_free_transfer(t);
+    }
+}
+
+#[cfg(all(test, not(target_os = "windows")))]
+mod tests {
+    use super::*;
+
+    // Whatever is plugged in: every device's interface classes read without
+    // opening it, one per interface its configuration declares.
+    #[test]
+    fn interface_classes_of_connected_devices() {
+        let mut ctx: *mut c_void = std::ptr::null_mut();
+        assert_eq!(unsafe { libusb_init(&mut ctx) }, 0);
+        let mut list: *mut *mut c_void = std::ptr::null_mut();
+        let n = unsafe { libusb_get_device_list(ctx, &mut list) };
+        for i in 0..n.max(0) {
+            let dev = unsafe { *list.offset(i) };
+            let mut d = DeviceDescriptor::default();
+            if unsafe { libusb_get_device_descriptor(dev, &mut d) } != 0 {
+                continue;
+            }
+            let classes = interface_classes(dev);
+            println!("{:04x}:{:04x} {:02x?}", d.id_vendor, d.id_product, classes);
+            assert!(classes.len() <= 32);
+        }
+        if !list.is_null() {
+            unsafe { libusb_free_device_list(list, 1) };
+        }
+        unsafe { libusb_exit(ctx) };
     }
 }

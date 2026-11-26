@@ -20,6 +20,7 @@ const INVALID_HANDLE_VALUE: HANDLE = -1isize as HANDLE;
 const DIGCF_PRESENT: u32 = 0x2;
 const DIGCF_ALLCLASSES: u32 = 0x4;
 const SPDRP_SERVICE: u32 = 0x4;
+const SPDRP_COMPATIBLEIDS: u32 = 0x2;
 const DICS_FLAG_GLOBAL: u32 = 0x1;
 const DIREG_DEV: u32 = 0x1;
 const KEY_READ: u32 = 0x20019;
@@ -127,10 +128,30 @@ fn from_wide(buf: &[u16]) -> String {
 }
 
 /// A present device: its instance id (upper case, e.g. `USB\VID_1D6B&PID_0100\…`)
-/// and the service (driver) bound to it, empty for none.
+/// the service (driver) bound to it, empty for none, and its compatible ids
+/// (upper case, e.g. `USB\CLASS_06&SUBCLASS_01&PROT_01`).
 pub struct Device {
     pub instance: String,
     pub service: String,
+    pub compatible: Vec<String>,
+}
+
+/// The USB class of each interface (or interface group) of the composite
+/// device `id` (e.g. "VID_1D6B&PID_0101"), from its child devices'
+/// compatible ids; 0 for a child whose class cannot be read. Empty when it
+/// has no children yet.
+pub fn interface_classes(devices: &[Device], id: &str) -> Vec<u8> {
+    let child = format!("{id}&MI_");
+    devices
+        .iter()
+        .filter(|d| d.instance.contains(&child))
+        .map(|d| {
+            d.compatible
+                .iter()
+                .find_map(|c| c.split_once("CLASS_").and_then(|(_, rest)| u8::from_str_radix(rest.get(..2)?, 16).ok()))
+                .unwrap_or(0)
+        })
+        .collect()
 }
 
 /// The present devices of one setup class, or (no class) everything the USB
@@ -180,7 +201,25 @@ pub fn usb_devices() -> Vec<Device> {
             )
         };
         let service = if ok != 0 { from_wide(&buf) } else { String::new() };
-        out.push(Device { instance, service });
+        // REG_MULTI_SZ: strings one after another, an empty one ends the list.
+        let mut ids = [0u16; 1024];
+        let ok = unsafe {
+            SetupDiGetDeviceRegistryPropertyW(
+                set,
+                data,
+                SPDRP_COMPATIBLEIDS,
+                null_mut(),
+                ids.as_mut_ptr() as *mut u8,
+                (ids.len() * 2) as u32,
+                null_mut(),
+            )
+        };
+        let compatible = if ok != 0 {
+            ids.split(|&c| c == 0).take_while(|s| !s.is_empty()).map(|s| String::from_utf16_lossy(s).to_uppercase()).collect()
+        } else {
+            Vec::new()
+        };
+        out.push(Device { instance, service, compatible });
     });
     out
 }

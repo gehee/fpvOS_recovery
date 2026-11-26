@@ -2,10 +2,18 @@
 //! `Update` stream so either the CLI or the GUI can drive it. All USB work
 //! happens on whatever thread calls `run_recovery`.
 //!
-//! Two boards are supported. The SteadyDigital and a P1 on stock 2.x share the
-//! Artosyn "v2" U-Boot HID loader; a P1 on stock 1.0.44 has the "v1" one, which
-//! the loader finds by probing (v1 first). Otherwise only the stock USB id, the
-//! embedded recovery bundle, and the loader's per-frame sizes differ.
+//! The SteadyDigital and a P1 on stock 2.x share the Artosyn "v2" U-Boot HID
+//! loader; a P1 on stock 1.0.44 has the "v1" one, which the loader finds by
+//! probing (v1 first). Otherwise only the stock USB id, the embedded recovery
+//! bundle, and the loader's per-frame sizes differ.
+//!
+//! A P1 is the air unit or a ground unit (the VR04 goggles, the P1 HD VRX), each
+//! kind with its own recovery. All have one stock USB id and one bootloader:
+//! on stock the kind is read from the unit's USB interfaces (stock_p1), else
+//! the user says. The ground units share one recovery, device tree included:
+//! which of them it is comes from the fpvOS bundle installed afterwards, one
+//! per unit, and the recovery takes either. The ground units are not yet run
+//! on hardware.
 
 use crate::loader::{Layout, Loader, DTB_ADDR, INITRD_ADDR, KERNEL_ADDR, V1, V2};
 
@@ -24,15 +32,36 @@ const P1_KERNEL_SHA: &str = "a1bb626b045f799874f6bb98ba99755ae722c15cb3d2fc5c0a4
 const P1_DTB_SHA: &str = "03b4b724a4331886ec5b7e15d472104b0763d4af7b6db9ef88be5605f7e3574c";
 const P1_INITRD_SHA: &str = "46e3972df53c49ccb32cfe7806ea1920c083b83f2b99387ef4739c6804fa66df";
 
+// The P1 ground units: one recovery, its device tree for any of them.
+const P1G_KERNEL: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/kernel.img");
+const P1G_DTB: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/betafpv-p1-gnd.dtb");
+const P1G_INITRD: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/recovery-initrd.img");
+const P1G_KERNEL_SHA: &str = "4995071ada3aea99e8e650c63e81c573e8bf2e4ba53ce7e2ab5892ad8ece8276";
+const P1G_DTB_SHA: &str = "36fac2058d0625ef9e82c3f7f4d8e14d01bc9d69162877342f39d18cd86ae1d0";
+const P1G_INITRD_SHA: &str = "c2e84af285799781395b46363407c2178c93ccc647a2eb09053f7532f517b344";
+
+// What a P1's bootloader is told before `bootm` on the v2 loader, in commands
+// of at most 15 characters: keep the DTB/initrd where they were loaded, and
+// boot non-secure (what the browser's P1 boot, proven from stock 1.0.44, also
+// sets). Names too long for 15 characters are assembled and `run`.
+const P1_BOOT_ENV: [&str; 15] = [
+    "set H ffffffff", "set H $H$H", "set fdt_high $H",
+    "set A setenv", "set i initrd_hi", "set c $A $i", "set c ${c}gh $H", "run c",
+    "set B bootm_", "set C boot_", "set D mode", "set E nosec",
+    "set c $A $B$C", "set c $c$D $E", "run c",
+];
+
 // Where the unit finishes its install after this tool puts it in recovery mode.
 pub const FLASHER_URL: &str = "https://gehee.github.io/fpvOS_flasher/";
 
-/// A supported board. The v2 bootloader is identical across both; only the
-/// stock USB id, the recovery bundle, and the loader frame sizes differ.
+/// A supported board. The v2 bootloader is identical across all of them; only
+/// the stock USB id, the recovery bundle, and the loader frame sizes differ.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Board {
     SteadyDigital,
     P1Air,
+    /// The VR04 goggles or the P1 HD VRX (Standard, Nano): one recovery for all of them.
+    P1Gnd,
 }
 
 impl Board {
@@ -40,25 +69,33 @@ impl Board {
         match self {
             Board::SteadyDigital => "Skyzone SteadyDigital",
             Board::P1Air => "BETAFPV P1 Air",
+            Board::P1Gnd => "BETAFPV VR04 goggles or P1 HD VRX",
         }
     }
     pub fn id(self) -> &'static str {
         match self {
             Board::SteadyDigital => "steadydigital",
             Board::P1Air => "p1-air",
+            Board::P1Gnd => "p1-gnd",
         }
     }
     pub fn from_id(s: &str) -> Option<Board> {
-        match s {
-            "steadydigital" => Some(Board::SteadyDigital),
-            "p1-air" => Some(Board::P1Air),
-            _ => None,
-        }
+        Board::ALL.into_iter().find(|b| b.id() == s)
     }
-    pub const ALL: [Board; 2] = [Board::SteadyDigital, Board::P1Air];
+    pub const ALL: [Board; 3] = [Board::SteadyDigital, Board::P1Air, Board::P1Gnd];
+    /// What a stock P1 (1d6b:0101) may be when its interfaces say nothing.
+    pub const STOCK_P1: [Board; 2] = [Board::P1Air, Board::P1Gnd];
+    /// The ids, for a usage line.
+    pub fn ids(boards: &[Board]) -> String {
+        boards.iter().map(|b| b.id()).collect::<Vec<_>>().join(" | ")
+    }
     // Stock USB product ids (vendor is always 0x1d6b): SteadyDigital 0x0210,
-    // P1 Air 0x0101. Both bootloaders are 0x0100, so a board can only be told
-    // apart while still in stock mode (see detect / loader::present).
+    // every P1 0x0101. All bootloaders are 0x0100, so a board can only be
+    // told apart while still in stock mode (see detect / loader::present).
+    //
+    // The P1 ground units' U-Boot is the P1 Air's build for build (the vendor's
+    // packages differ in the build date and the board device tree), so they
+    // are driven as the P1 Air is.
     //
     /// Data bytes per read reply. Writes: see write_chunk - the v2 loader
     /// (P1 stock 2.x, SteadyDigital) commits one 64-byte packet per frame (48
@@ -67,7 +104,7 @@ impl Board {
     fn read_chunk(self) -> usize {
         match self {
             Board::SteadyDigital => 8,
-            Board::P1Air => 16,
+            Board::P1Air | Board::P1Gnd => 16,
         }
     }
     /// Data bytes per write frame where the board fixes it; None: the
@@ -75,7 +112,7 @@ impl Board {
     fn write_chunk(self) -> Option<usize> {
         match self {
             Board::SteadyDigital => Some(15),
-            Board::P1Air => None,
+            Board::P1Air | Board::P1Gnd => None,
         }
     }
     /// The bootloaders the board may have, in probing order (see
@@ -83,52 +120,52 @@ impl Board {
     fn bootloaders(self) -> &'static [&'static Layout] {
         match self {
             Board::SteadyDigital => &[&V2],
-            Board::P1Air => &[&V1, &V2],
+            Board::P1Air | Board::P1Gnd => &[&V1, &V2],
         }
     }
     fn kernel(self) -> (&'static [u8], &'static str) {
         match self {
             Board::SteadyDigital => (SD_KERNEL, SD_KERNEL_SHA),
             Board::P1Air => (P1_KERNEL, P1_KERNEL_SHA),
+            Board::P1Gnd => (P1G_KERNEL, P1G_KERNEL_SHA),
         }
     }
     fn dtb(self) -> (&'static [u8], &'static str) {
         match self {
             Board::SteadyDigital => (SD_DTB, SD_DTB_SHA),
             Board::P1Air => (P1_DTB, P1_DTB_SHA),
+            Board::P1Gnd => (P1G_DTB, P1G_DTB_SHA),
         }
     }
     fn initrd(self) -> (&'static [u8], &'static str) {
         match self {
             Board::SteadyDigital => (SD_INITRD, SD_INITRD_SHA),
             Board::P1Air => (P1_INITRD, P1_INITRD_SHA),
+            Board::P1Gnd => (P1G_INITRD, P1G_INITRD_SHA),
         }
     }
-    /// U-Boot commands that set `bootargs` before `bootm`, or none to leave the
-    /// bootloader's. `bootm` hands the kernel U-Boot's bootargs (or the DTB's),
-    /// never the kernel's built-in CONFIG_CMDLINE, so the P1 recovery gets its
-    /// own line here: maxcpus=1 (the SPL parks CPU1 its own way - the stock 2.x
-    /// SPL is not where the DT's spin table expects) and clk_ignore_unused (or
-    /// the late clock cleanup stops the board after the USB gadget is up). Built
-    /// from short variables: the v2 loader takes 15-character commands. Avoids
-    /// a/r/f/n/s, which load_image() and boot() use.
-    fn bootargs(self) -> &'static [&'static str] {
+    /// U-Boot commands sent before `bootm` on the v2 loader, or none to leave
+    /// the bootloader's settings. `bootm` hands the kernel U-Boot's bootargs (or
+    /// the DTB's), never the kernel's built-in CONFIG_CMDLINE, so the P1 Air
+    /// recovery gets its own line here: maxcpus=1 (the SPL parks CPU1 its own
+    /// way - the stock 2.x SPL is not where the DT's spin table expects) and
+    /// clk_ignore_unused (or the late clock cleanup stops the board after the
+    /// USB gadget is up). Built from short variables: the v2 loader takes
+    /// 15-character commands. Avoids a/r/f/n/s, which load_image() and boot()
+    /// use. The P1 ground recovery kernel forces its own line (the same
+    /// settings, CONFIG_CMDLINE_FORCE), so it only needs P1_BOOT_ENV.
+    fn boot_commands(self) -> Vec<&'static str> {
+        const P1_AIR_BOOTARGS: [&str; 15] = [
+            "set w console=", "set y ttyS0,", "set z 1152000", "set k mem=128M",
+            "set u rdinit=/", "set v init", "set m maxcpus=1", "set p nr_cpus=1",
+            "set q clk_igno", "set t re_unused",
+            "set x $w$y$z $k", "set x $x $u$v", "set x $x $m $p", "set x $x $q$t",
+            "set bootargs $x",
+        ];
         match self {
-            Board::SteadyDigital => &[],
-            Board::P1Air => &[
-                "set w console=", "set y ttyS0,", "set z 1152000", "set k mem=128M",
-                "set u rdinit=/", "set v init", "set m maxcpus=1", "set p nr_cpus=1",
-                "set q clk_igno", "set t re_unused",
-                "set x $w$y$z $k", "set x $x $u$v", "set x $x $m $p", "set x $x $q$t",
-                "set bootargs $x",
-                // What the browser's P1 boot (proven from stock 1.0.44) also sets:
-                // keep the DTB/initrd where they were loaded, and boot non-secure.
-                // Names too long for 15 characters are assembled and `run`.
-                "set H ffffffff", "set H $H$H", "set fdt_high $H",
-                "set A setenv", "set i initrd_hi", "set c $A $i", "set c ${c}gh $H", "run c",
-                "set B bootm_", "set C boot_", "set D mode", "set E nosec",
-                "set c $A $B$C", "set c $c$D $E", "run c",
-            ],
+            Board::SteadyDigital => Vec::new(),
+            Board::P1Air => P1_AIR_BOOTARGS.iter().chain(P1_BOOT_ENV.iter()).copied().collect(),
+            Board::P1Gnd => P1_BOOT_ENV.to_vec(),
         }
     }
 }
@@ -186,6 +223,9 @@ pub enum Detected {
     None,
     /// A board in stock firmware (ready to put into recovery).
     Stock(Board),
+    /// A unit in stock firmware that is one of these, alike over USB: the
+    /// user says which (a P1 whose interfaces did not say).
+    StockOneOf(&'static [Board]),
     /// A unit already in the Artosyn bootloader — board can't be told apart.
     Bootloader,
 }
@@ -193,6 +233,48 @@ pub enum Detected {
 /// Poll what compatible hardware is connected (non-intrusive).
 pub fn detect() -> Detected {
     platform::detect()
+}
+
+// USB interface classes: CDC control and data (the stock serial port, and RNDIS
+// on some systems), wireless controller and miscellaneous (RNDIS as stock
+// declares it), still image (MTP).
+const CLASS_CDC: u8 = 0x02;
+const CLASS_CDC_DATA: u8 = 0x0a;
+const CLASS_WIRELESS: u8 = 0xe0;
+const CLASS_MISC: u8 = 0xef;
+const CLASS_STILL_IMAGE: u8 = 0x06;
+
+/// Which P1 a stock one (1d6b:0101) is, from the classes of its USB
+/// interfaces. Every P1 has that id, but stock's ground firmware serves its SD
+/// card over MTP (a still-image interface) beside the network and serial
+/// ports, and the air unit's does not - in every stock package compared
+/// (air 1.0.44 and 2.1.2; ground 1.0.44, 2.0.5, 2.0.6, 2.0.8 and 2.1.4), not
+/// yet seen on a unit. So: MTP present, a ground unit (the VR04 goggles or the
+/// P1 HD VRX: one recovery for all); only the network and serial interfaces, the
+/// air unit; anything else (or nothing readable), the user says.
+/// macOS lists every interface, Windows one entry per function (0 where it
+/// could not read the class), so the air unit is "the serial port and at
+/// least one more, all of them network or serial".
+pub fn stock_p1(classes: &[u8]) -> Detected {
+    let known = |c: &u8| [CLASS_CDC, CLASS_CDC_DATA, CLASS_WIRELESS, CLASS_MISC].contains(c);
+    if classes.contains(&CLASS_STILL_IMAGE) {
+        Detected::Stock(Board::P1Gnd)
+    } else if classes.len() >= 2 && classes.contains(&CLASS_CDC) && classes.iter().all(known) {
+        Detected::Stock(Board::P1Air)
+    } else {
+        Detected::StockOneOf(&Board::STOCK_P1)
+    }
+}
+
+/// Whether `board` can be what is connected: a stock unit that says what it
+/// is (or what it is one of) is never driven as something else. A unit in the
+/// bootloader, or none found, says nothing.
+pub fn consistent(board: Board, detected: Detected) -> bool {
+    match detected {
+        Detected::Stock(b) => b == board,
+        Detected::StockOneOf(list) => list.contains(&board),
+        Detected::Bootloader | Detected::None => true,
+    }
 }
 
 /// Whether the current process must relaunch an elevated worker to claim USB
@@ -261,9 +343,10 @@ fn run_inner(dry_run: bool, board: Board, report: &Report) -> Result<(), String>
     report(Update::Step(Step::Boot));
     // The kernel line is the 2.x loader's need (its SPL, its short commands);
     // the 1.0.44 loader boots as the web flasher boots it, with its own.
-    if link.layout().short_commands && !board.bootargs().is_empty() {
-        report(Update::Status("Setting the recovery kernel command line…".into()));
-        link.commands(board.bootargs())?;
+    let commands = board.boot_commands();
+    if link.layout().short_commands && !commands.is_empty() {
+        report(Update::Status("Setting the recovery boot settings…".into()));
+        link.commands(&commands)?;
     }
     report(Update::Status("Booting into fpvOS recovery mode…".into()));
     link.boot()?;
@@ -404,8 +487,8 @@ mod platform {
         let (p1, sd, boot) = crate::loader::present();
         if sd {
             Detected::Stock(Board::SteadyDigital)
-        } else if p1 {
-            Detected::Stock(Board::P1Air)
+        } else if let Some(classes) = p1 {
+            super::stock_p1(&classes)
         } else if boot {
             Detected::Bootloader
         } else {
@@ -513,7 +596,7 @@ mod platform {
         if has(STOCK_SD) {
             Detected::Stock(Board::SteadyDigital)
         } else if has(STOCK_P1) {
-            Detected::Stock(Board::P1Air)
+            super::stock_p1(&win::interface_classes(&devices, STOCK_P1))
         } else if has(BOOTLOADER) {
             Detected::Bootloader
         } else {
@@ -607,7 +690,9 @@ mod platform {
     // too, but Windows' HID API rejects the bootloader's undeclared report ids,
     // so every transfer would fail. Only open it once it is bound to WinUSB.
     pub fn wait_for_loader(link: &mut Loader, reboot_sent: bool, report: &Report) -> Result<(), String> {
-        let appear = Instant::now() + Duration::from_secs(if reboot_sent { 15 } else { 5 });
+        // As long as macOS waits: stock shuts down cleanly before it restarts,
+        // and a P1 ground unit on stock 2.1.4 was reported not back within 15 s.
+        let appear = Instant::now() + Duration::from_secs(if reboot_sent { 30 } else { 5 });
         let svc = loop {
             if let Some(svc) = loader_driver() {
                 break svc;
@@ -748,4 +833,71 @@ pub fn crc32(data: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn boards(d: Detected) -> Vec<&'static str> {
+        match d {
+            Detected::Stock(b) => vec![b.id()],
+            Detected::StockOneOf(list) => list.iter().map(|b| b.id()).collect(),
+            _ => vec![],
+        }
+    }
+
+    #[test]
+    fn a_stock_p1_is_told_apart_by_its_mtp_interface() {
+        // air: RNDIS (control + data) and the serial port (control + data)
+        assert_eq!(boards(stock_p1(&[0xe0, 0x0a, 0x02, 0x0a])), ["p1-air"]);
+        assert_eq!(boards(stock_p1(&[0xef, 0x0a, 0x02, 0x0a])), ["p1-air"]);
+        assert_eq!(boards(stock_p1(&[0x02, 0x0a, 0x02, 0x0a])), ["p1-air"]);
+        // ground: the same with MTP between them
+        assert_eq!(boards(stock_p1(&[0xe0, 0x0a, 0x06, 0x02, 0x0a])), ["p1-gnd"]);
+        // unreadable, or anything not known: the user says
+        assert_eq!(boards(stock_p1(&[])), ["p1-air", "p1-gnd"]);
+        assert_eq!(boards(stock_p1(&[0xe0, 0x0a, 0xff, 0x02, 0x0a])), ["p1-air", "p1-gnd"]);
+        assert_eq!(boards(stock_p1(&[0x02])), ["p1-air", "p1-gnd"]);
+        // Windows: one entry per function, 0 for a class it could not read
+        assert_eq!(boards(stock_p1(&[0xe0, 0x02])), ["p1-air"]);
+        assert_eq!(boards(stock_p1(&[0xe0, 0x06, 0x02])), ["p1-gnd"]);
+        assert_eq!(boards(stock_p1(&[0xe0, 0x00, 0x02])), ["p1-air", "p1-gnd"]);
+        assert_eq!(boards(stock_p1(&[0xe0, 0x00])), ["p1-air", "p1-gnd"]);
+    }
+
+    #[test]
+    fn a_stock_unit_is_never_driven_as_another() {
+        let ground = stock_p1(&[0xe0, 0x0a, 0x06, 0x02, 0x0a]);
+        assert!(consistent(Board::P1Gnd, ground));
+        assert!(!consistent(Board::P1Air, ground) && !consistent(Board::SteadyDigital, ground));
+        let air = stock_p1(&[0xe0, 0x0a, 0x02, 0x0a]);
+        assert!(consistent(Board::P1Air, air) && !consistent(Board::P1Gnd, air));
+        assert!(!consistent(Board::P1Air, Detected::Stock(Board::SteadyDigital)));
+        // interfaces that said nothing: either P1, never another board
+        let unknown = stock_p1(&[]);
+        assert!(consistent(Board::P1Air, unknown) && consistent(Board::P1Gnd, unknown));
+        assert!(!consistent(Board::SteadyDigital, unknown));
+        // the bootloader says nothing: the user's word stands
+        for b in Board::ALL {
+            assert!(consistent(b, Detected::Bootloader) && consistent(b, Detected::None));
+        }
+    }
+
+    #[test]
+    fn board_ids_round_trip() {
+        for b in Board::ALL {
+            assert!(Board::from_id(b.id()) == Some(b));
+        }
+        assert!(Board::from_id("p1").is_none());
+        assert!(Board::from_id("p1-goggles").is_none());
+    }
+
+    #[test]
+    fn the_ground_recovery_names_no_unit() {
+        // one tree for any ground unit: the unit tells itself apart once it runs
+        let has = |needle: &[u8]| P1G_DTB.windows(needle.len()).any(|w| w == needle);
+        assert!(has(b"betafpv,p1-gnd\0"));
+        assert!(!has(b"betafpv,p1-goggle") && !has(b"betafpv,p1-nano-vrx"));
+    }
 }

@@ -9,7 +9,9 @@ name: recovery-app
 #                                the WinUSB helper inside), plus license texts
 #
 # Run it by pushing a tag like `recovery-app-v0.4.5`, or by hand (workflow_dispatch,
-# which cuts a prerelease that does NOT become releases/latest). Signing is
+# which cuts a prerelease that does NOT become releases/latest). A tag with a
+# hyphen after the version (`recovery-app-v0.5.0-alpha1`) is a prerelease too:
+# the flasher's alpha page links it by its tag, the live page keeps the latest. Signing is
 # optional and runs only when the repo has the secrets below; without them the
 # apps are unsigned and the user accepts the one-time "unidentified developer"
 # prompt.
@@ -228,7 +230,9 @@ jobs:
           set -eux
           ls -R dist
           FLAGS=""
-          [ "$IS_TAG" = "true" ] || FLAGS="--prerelease"
+          # a run by hand, or a tag with a suffix (recovery-app-v0.5.0-alpha1):
+          # a prerelease, never releases/latest
+          case "$IS_TAG:$TAG" in true:recovery-app-v*-*|false:*) FLAGS="--prerelease" ;; esac
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "fpvOS Recovery $TAG" $FLAGS \
               --notes "Native recovery apps for the one-time stock→fpvOS step on macOS and Windows. The web flasher links these at releases/latest/download/."
