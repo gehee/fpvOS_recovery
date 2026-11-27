@@ -36,8 +36,8 @@ const P1_INITRD_SHA: &str = "46e3972df53c49ccb32cfe7806ea1920c083b83f2b99387ef47
 const P1G_KERNEL: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/kernel.img");
 const P1G_DTB: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/betafpv-p1-gnd.dtb");
 const P1G_INITRD: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/recovery-initrd.img");
-const P1G_KERNEL_SHA: &str = "4995071ada3aea99e8e650c63e81c573e8bf2e4ba53ce7e2ab5892ad8ece8276";
-const P1G_DTB_SHA: &str = "36fac2058d0625ef9e82c3f7f4d8e14d01bc9d69162877342f39d18cd86ae1d0";
+const P1G_KERNEL_SHA: &str = "488305627d5efb88ae977fdddca082fc9c0da1c3d4c03098c7a9ab950eab9d2e";
+const P1G_DTB_SHA: &str = "e95e474ba826ecf2b29b4809343c3667ff1193dedb13c55b358ff64114c23779";
 const P1G_INITRD_SHA: &str = "c2e84af285799781395b46363407c2178c93ccc647a2eb09053f7532f517b344";
 
 // What a P1's bootloader is told before `bootm` on the v2 loader, in commands
