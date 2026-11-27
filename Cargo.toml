@@ -1,6 +1,6 @@
 [package]
 name = "fpvos-recovery"
-version = "0.5.0-alpha2"
+version = "0.5.0-387f0c8"
 license-file = "LICENSE"
 edition = "2021"
 build = "build.rs"
