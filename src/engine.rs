@@ -330,6 +330,9 @@ fn run_inner(dry_run: bool, board: Board, report: &Report) -> Result<(), String>
 
     report(Update::Step(Step::Reboot));
     let reboot_sent = platform::enter_loader(report)?;
+    if reboot_sent {
+        restart_taken(report)?;
+    }
     report(Update::Status("Waiting for the Artosyn USB download gadget…".into()));
     platform::wait_for_loader(&mut link, reboot_sent, report)?;
 
@@ -483,6 +486,25 @@ pub fn open_url(url: &str) {
 
 // ---- Platform: macOS -------------------------------------------------------
 
+/// After the restart command: a unit that takes it drops its stock serial port
+/// (or is already its bootloader) within seconds. One whose port stays never
+/// read the command: the P1 AIO's stock firmware runs no service on that port.
+const RESTART_NOT_TAKEN: &str = "The unit did not take the restart command: nothing in its stock firmware listened for it on its USB serial port. That is the case of the BETAFPV P1 AIO, which this app does not support (its stock firmware has no such service, and its flash is not the P1 Air's). For another unit, unplug it and its power, plug it back in, and try again.";
+
+fn restart_taken(report: &Report) -> Result<(), String> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    loop {
+        if platform::loader_present() || !platform::stock_port_present() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= until {
+            report(Update::Status("The stock serial port is still there 12 s after the restart command.".into()));
+            return Err(RESTART_NOT_TAKEN.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{Board, Detected, Report, Update};
@@ -553,6 +575,16 @@ mod platform {
             .map_err(|e| format!("Could not send the reboot command on {p}: {e}"))?;
         let _ = f.flush();
         Ok(())
+    }
+
+    /// The unit's stock serial port is still there.
+    pub fn stock_port_present() -> bool {
+        !usbmodem_ports().is_empty()
+    }
+
+    /// The bootloader (1d6b:0100) is on USB.
+    pub fn loader_present() -> bool {
+        crate::loader::present().2
     }
 
     pub fn enter_loader(report: &Report) -> Result<bool, String> {
@@ -630,14 +662,28 @@ mod platform {
 
     // The reboot packet is the same for both boards: send it to whichever
     // stock serial port is present.
+    /// The unit's stock serial port is still there.
+    pub fn stock_port_present() -> bool {
+        win::com_port(&[STOCK_SD, STOCK_P1]).is_some()
+    }
+
+    /// The bootloader (1d6b:0100) is on USB.
+    pub fn loader_present() -> bool {
+        loader_driver().is_some()
+    }
+
     pub fn enter_loader(report: &Report) -> Result<bool, String> {
         let Some(port) = win::com_port(&[STOCK_SD, STOCK_P1]) else {
             report(Update::Status("No stock serial port found; assuming the unit is already in the bootloader.".into()));
             return Ok(false);
         };
         report(Update::Status(format!("Rebooting into the bootloader via {port}…")));
-        win::write_serial(&port, &REBOOT_PACKET)
-            .map_err(|e| format!("Could not reboot the unit into the bootloader: {e}"))?;
+        match win::write_serial(&port, &REBOOT_PACKET) {
+            Ok(()) => {}
+            // nothing on the unit read the port: the command was never taken
+            Err(e) if e.contains("did not take") => return Err(super::RESTART_NOT_TAKEN.into()),
+            Err(e) => return Err(format!("Could not reboot the unit into the bootloader: {e}")),
+        }
         Ok(true)
     }
 
@@ -767,6 +813,14 @@ mod platform {
         let _ = Update::Status(String::new());
         Ok(false)
     }
+    pub fn stock_port_present() -> bool {
+        false
+    }
+
+    pub fn loader_present() -> bool {
+        false
+    }
+
     pub fn wait_for_loader(_link: &mut Loader, _reboot_sent: bool, _report: &Report) -> Result<(), String> {
         Err("unsupported platform".into())
     }

@@ -105,6 +105,7 @@ extern "system" {
     fn BuildCommDCBW(def: *const u16, dcb: *mut u32) -> BOOL;
     fn SetCommState(file: HANDLE, dcb: *const u32) -> BOOL;
     fn WriteFile(file: HANDLE, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> BOOL;
+    fn SetCommTimeouts(file: HANDLE, timeouts: *const COMMTIMEOUTS) -> BOOL;
     fn FlushFileBuffers(file: HANDLE) -> BOOL;
     fn CloseHandle(h: HANDLE) -> BOOL;
     fn WaitForSingleObject(h: HANDLE, ms: u32) -> u32;
@@ -252,6 +253,15 @@ pub fn com_port(ids: &[&str]) -> Option<String> {
     found
 }
 
+#[repr(C)]
+struct COMMTIMEOUTS {
+    read_interval: u32,
+    read_multiplier: u32,
+    read_constant: u32,
+    write_multiplier: u32,
+    write_constant: u32,
+}
+
 /// Write `bytes` to a COM port at 115200 8N1.
 pub fn write_serial(port: &str, bytes: &[u8]) -> Result<(), String> {
     let path = wide(format!(r"\\.\{port}"));
@@ -272,8 +282,16 @@ pub fn write_serial(port: &str, bytes: &[u8]) -> Result<(), String> {
             CloseHandle(h);
             return Err(format!("Could not configure {port} (error {e})."));
         }
+        // At most 3 s for the unit to take the bytes: a unit whose stock
+        // firmware never reads this port (the P1 AIO) would hold them forever.
+        let t = COMMTIMEOUTS { read_interval: 0, read_multiplier: 0, read_constant: 0, write_multiplier: 0, write_constant: 3000 };
+        SetCommTimeouts(h, &t);
         let mut written = 0u32;
         let ok = WriteFile(h, bytes.as_ptr(), bytes.len() as u32, &mut written, null_mut()) != 0;
+        if !ok || (written as usize) < bytes.len() {
+            CloseHandle(h);
+            return Err(format!("The unit did not take the command on {port} within 3 s."));
+        }
         FlushFileBuffers(h);
         std::thread::sleep(std::time::Duration::from_millis(150));
         CloseHandle(h);
