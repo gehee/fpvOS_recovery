@@ -36,7 +36,7 @@ const P1_INITRD_SHA: &str = "46e3972df53c49ccb32cfe7806ea1920c083b83f2b99387ef47
 const P1G_KERNEL: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/kernel.img");
 const P1G_DTB: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/betafpv-p1-gnd.dtb");
 const P1G_INITRD: &[u8] = include_bytes!("../assets/p1-gnd-updater/browser-v1/recovery-initrd.img");
-const P1G_KERNEL_SHA: &str = "488305627d5efb88ae977fdddca082fc9c0da1c3d4c03098c7a9ab950eab9d2e";
+const P1G_KERNEL_SHA: &str = "ab5935c57103459fcf8751bdde068bcd488777aff48b1c925e2e4a77892c9cb7";
 const P1G_DTB_SHA: &str = "e95e474ba826ecf2b29b4809343c3667ff1193dedb13c55b358ff64114c23779";
 const P1G_INITRD_SHA: &str = "c2e84af285799781395b46363407c2178c93ccc647a2eb09053f7532f517b344";
 

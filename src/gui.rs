@@ -313,9 +313,37 @@ pub struct RecoveryApp {
     notice: Option<String>,
     log: Vec<String>,
     show_log: bool,
+    /// When the run began (each log line says how long after), and where its
+    /// log was saved once it ended.
+    run_start: Option<Instant>,
+    log_file: Option<std::path::PathBuf>,
     dry_run: bool,
     demo: bool,
     shot: Option<Shot>,
+}
+
+/// The Downloads folder of the user running the window.
+fn home_downloads() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+    let dir = std::path::PathBuf::from(home).join("Downloads");
+    dir.is_dir().then_some(dir)
+}
+
+/// The time now in UTC, "YYYY-MM-DD HH:MM:SS", with no date library.
+fn utc_now() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let (days, rem) = ((secs / 86400) as i64, secs % 86400);
+    // civil from days (Howard Hinnant's algorithm)
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
 fn shq(s: &str) -> String {
@@ -345,6 +373,8 @@ impl RecoveryApp {
             notice: None,
             log: Vec::new(),
             show_log: false,
+            run_start: None,
+            log_file: None,
             dry_run,
             demo: false,
             shot,
@@ -379,6 +409,18 @@ impl RecoveryApp {
     fn start_run(&mut self, ctx: &egui::Context, board: Board) {
         self.reset();
         self.log.clear();
+        self.log_file = None;
+        self.run_start = Some(Instant::now());
+        self.note(format!(
+            "fpvOS Recovery {} on {} {}, {} (UTC {}); the unit is a {}, handed off to {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            if self.dry_run { "dry run" } else { "recovery" },
+            utc_now(),
+            board.label(),
+            FLASHER_URL
+        ));
         self.notice = None;
         self.phase = Phase::Running;
         self.run_board = Some(board);
@@ -483,14 +525,38 @@ impl RecoveryApp {
                 *mark = Mark::Failed;
             }
         }
-        self.log.push(format!("Error: {message}"));
+        self.note(format!("Error: {message}"));
         self.phase = Phase::Failed(message);
+        // what to send when asking for help, in view
+        self.show_log = true;
         self.progress = None;
+    }
+
+    /// A log line, with how long into the run it came.
+    fn note(&mut self, line: String) {
+        match self.run_start {
+            Some(t0) => self.log.push(format!("{:>6.1}s  {line}", t0.elapsed().as_secs_f32())),
+            None => self.log.push(line),
+        }
+    }
+
+    /// The run's log, saved where the user finds it (Downloads, else the
+    /// temporary folder), to send with a question or a bug report.
+    fn save_log(&mut self) {
+        let dir = home_downloads().unwrap_or_else(std::env::temp_dir);
+        let path = dir.join(format!("fpvOS-Recovery-{}.log", utc_now().replace([':', '-'], "").replace(' ', "-")));
+        match std::fs::write(&path, self.log.join("\n") + "\n") {
+            Ok(()) => {
+                self.note(format!("Log saved to {}", path.display()));
+                self.log_file = Some(path);
+            }
+            Err(e) => self.note(format!("Could not save the log to {}: {e}", path.display())),
+        }
     }
 
     fn apply(&mut self, u: Update, finished: &mut bool) {
         match u {
-            Update::Status(s) => self.log.push(s),
+            Update::Status(s) => self.note(s),
             Update::Step(step) => self.enter_step(step),
             Update::Progress { done, total, .. } => {
                 self.progress = Some(done as f32 / total.max(1) as f32);
@@ -502,7 +568,7 @@ impl RecoveryApp {
                 }
             }
             Update::NeedsWinusb { driver } => {
-                self.log.push(format!("The bootloader is bound to {driver}, not WinUSB."));
+                self.note(format!("The bootloader is bound to {driver}, not WinUSB."));
                 self.winusb = Some(driver);
             }
             Update::Finished { dry_run } => {
@@ -511,10 +577,13 @@ impl RecoveryApp {
                 }
                 self.phase = Phase::Done { dry_run };
                 self.progress = None;
+                self.note("Finished.".into());
+                self.save_log();
                 *finished = true;
             }
             Update::Failed(e) => {
                 self.fail(e);
+                self.save_log();
                 *finished = true;
             }
             Update::Cancelled => {
@@ -856,6 +925,14 @@ impl RecoveryApp {
                 if button(ui, "Try again", Look::Solid, true, full) {
                     self.reset();
                 }
+                ui.add_space(8.0);
+                if link(ui, "Copy the log for a bug report", DATA) {
+                    ui.ctx().copy_text(self.log.join("\n"));
+                }
+                if let Some(path) = &self.log_file {
+                    ui.add_space(4.0);
+                    ui.label(body(&format!("Also saved as {}", path.display()), 12.5, QUIET));
+                }
             }
         }
     }
@@ -1000,6 +1077,8 @@ impl RecoveryApp {
                 self.steps =
                     vec![(Authorize, Done), (Reboot, Failed), (Verify, Pending), (Load, Pending), (Boot, Pending)];
                 self.log = log[..3].to_vec();
+                self.show_log = true;
+                self.log_file = Some(std::path::PathBuf::from("C:\\Users\\pilot\\Downloads\\fpvOS-Recovery-20261127-050122.log"));
             }
             other => return Err(format!("unknown demo state '{other}'")),
         }
@@ -1040,4 +1119,19 @@ pub fn run(opts: Options) -> Result<(), String> {
         }),
     )
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn utc_now_is_a_plain_date_and_time() {
+        let now = super::utc_now();
+        assert_eq!(now.len(), 19, "{now}");
+        assert!(now.starts_with("20"), "{now}");
+        let year: i32 = now[..4].parse().unwrap();
+        let month: u32 = now[5..7].parse().unwrap();
+        let day: u32 = now[8..10].parse().unwrap();
+        assert!(year >= 2026 && (1..=12).contains(&month) && (1..=31).contains(&day), "{now}");
+        assert_eq!(&now[10..11], " ");
+    }
 }
