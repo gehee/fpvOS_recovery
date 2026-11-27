@@ -51,8 +51,19 @@ const P1_BOOT_ENV: [&str; 15] = [
     "set c $A $B$C", "set c $c$D $E", "run c",
 ];
 
-// Where the unit finishes its install after this tool puts it in recovery mode.
-pub const FLASHER_URL: &str = "https://gehee.github.io/fpvOS_flasher/";
+// Where the unit finishes its install after this tool puts it in recovery mode:
+// the flasher page that offered this build. A prerelease (a version with a
+// pre-release part, 0.5.0-alpha2: the tag `recovery-app-v0.5.0-alpha2`) is the
+// preview page's app and sends the unit back to /preview/, which may support
+// boards the live page does not yet; a release goes to the live page.
+// FPVOS_FLASHER_URL at build time overrides both.
+const LIVE_FLASHER_URL: &str = "https://gehee.github.io/fpvOS_flasher/";
+const PREVIEW_FLASHER_URL: &str = "https://gehee.github.io/fpvOS_flasher/preview/";
+pub const FLASHER_URL: &str = match option_env!("FPVOS_FLASHER_URL") {
+    Some(url) => url,
+    None if env!("CARGO_PKG_VERSION_PRE").is_empty() => LIVE_FLASHER_URL,
+    None => PREVIEW_FLASHER_URL,
+};
 
 /// A supported board. The v2 bootloader is identical across all of them; only
 /// the stock USB id, the recovery bundle, and the loader frame sizes differ.
@@ -838,6 +849,15 @@ pub fn crc32(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prerelease_hands_off_to_the_preview_page_a_release_to_the_live_one() {
+        if option_env!("FPVOS_FLASHER_URL").is_some() {
+            return;
+        }
+        let pre = !env!("CARGO_PKG_VERSION_PRE").is_empty();
+        assert_eq!(FLASHER_URL, if pre { PREVIEW_FLASHER_URL } else { LIVE_FLASHER_URL });
+    }
 
     fn boards(d: Detected) -> Vec<&'static str> {
         match d {

@@ -41,7 +41,7 @@ fn print_help() {
          Usage: fpvos-recovery [--cli] [--dry-run] [--board <unit>]\n\n\
          Default opens a window; --cli runs in the terminal. It reboots the unit into the\n\
          Artosyn bootloader, loads fpvOS recovery into RAM, and boots into recovery mode,\n\
-         then hand off to the web flasher: https://gehee.github.io/fpvOS_flasher/\n\n\
+         then hand off to the web flasher: {}\n\n\
          macOS:   it prompts for administrator access when it needs to claim USB.\n\
          Windows: the first time, it installs the WinUSB driver for the bootloader\n\
                   (1D6B 0100) after one Windows prompt; Zadig is the fallback.\n\n\
@@ -51,7 +51,8 @@ fn print_help() {
          \x20           which is the same on all of them.\n\
          --dry-run   enter the bootloader, verify it, load and on-device checksum the\n\
                      recovery images, but do NOT boot. Power-cycle afterwards.\n\
-         A power cycle always restores stock; nothing is written to flash."
+         A power cycle always restores stock; nothing is written to flash.",
+        engine::FLASHER_URL
     );
 }
 

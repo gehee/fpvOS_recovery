@@ -10,8 +10,10 @@ name: recovery-app
 #
 # Run it by pushing a tag like `recovery-app-v0.4.5`, or by hand (workflow_dispatch,
 # which cuts a prerelease that does NOT become releases/latest). A tag with a
-# hyphen after the version (`recovery-app-v0.5.0-alpha1`) is a prerelease too:
-# the flasher's alpha page links it by its tag, the live page keeps the latest. Signing is
+# hyphen after the version is a prerelease too, named by the commit it builds
+# (`recovery-app-v0.5.0-<commit>`, Cargo.toml's version 0.5.0-<commit>): the
+# flasher's preview page links it by its tag, the live page keeps the latest,
+# and the app itself hands off to /preview/ (src/engine.rs FLASHER_URL). Signing is
 # optional and runs only when the repo has the secrets below; without them the
 # apps are unsigned and the user accepts the one-time "unidentified developer"
 # prompt.
